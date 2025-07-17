@@ -1,0 +1,123 @@
+#!/bin/bash
+
+set -e
+
+print_status() {
+  echo "Running Minecraft containers:"
+  docker ps --filter "name=minecraft-" --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+}
+
+show_logs() {
+  local version="$1"
+  docker logs -f "minecraft-$version"
+}
+
+remove_container() {
+  local version="$1"
+  docker stop "minecraft-$version" && docker rm "minecraft-$version"
+}
+
+MODE=""
+VERSION=""
+TARGET_DIR=""
+
+if [[ "$1" == "--status" || "$1" == "-s" ]]; then
+  print_status
+  exit 0
+elif [[ "$1" == "--logs" && -n "$2" ]]; then
+  show_logs "$2"
+  exit 0
+elif [[ "$1" == "--remove" && -n "$2" ]]; then
+  remove_container "$2"
+  exit 0
+fi
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -v)
+      MODE="vanilla"
+      VERSION="$2"
+      shift 2
+      ;;
+    *)
+      TARGET_DIR="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$MODE" || -z "$VERSION" || -z "$TARGET_DIR" ]]; then
+  echo "Usage: sofortcraft -v <version> <target_dir>"
+  exit 1
+fi
+
+mkdir -p "$TARGET_DIR"
+cd "$TARGET_DIR"
+
+MANIFEST_URL="https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+VERSION_URL=$(curl -s "$MANIFEST_URL" | jq -r --arg VER "$VERSION" '.versions[] | select(.id == $VER) | .url')
+
+if [[ -z "$VERSION_URL" ]]; then
+  echo "Error: Version $VERSION not found."
+  exit 1
+fi
+
+SERVER_JAR_URL=$(curl -s "$VERSION_URL" | jq -r '.downloads.server.url')
+
+
+if [[ -z "$SERVER_JAR_URL" ]]; then
+  echo "Error: No server JAR found for version $VERSION"
+  exit 1
+fi
+
+JAR_NAME="minecraft_server.$VERSION.jar"
+if [[ ! -f "$JAR_NAME" ]]; then
+  echo "Downloading server $VERSION..."
+  curl -L "$SERVER_JAR_URL" -o "$JAR_NAME"
+fi
+
+echo "eula=true" > eula.txt
+
+get_java_image_for_mc_version() {
+  local ver="$1"
+
+  # "1.20.5" is major=1, minor=20, patch=5
+  major="${ver%%.*}"
+  rest="${ver#*.}"
+  minor="${rest%%.*}"
+  patch="${rest#*.}"
+  patch="${patch#*.}"
+
+  # version --> Java 21
+  # 1.20.5 > version --> Java 21
+  # 1.17 <= version < 1.20.5 --> Java 17
+  # < 1.17 --> Java 8
+
+  if [[ "$major" -ge 2 ]]; then
+    echo "eclipse-temurin:21"  # z. B. future 2.x Releases
+  elif [[ "$major" -eq 1 && "$minor" -gt 20 ]]; then
+    echo "eclipse-temurin:21"
+  elif [[ "$major" -eq 1 && "$minor" -eq 20 && "$patch" -ge 5 ]]; then
+    echo "eclipse-temurin:21"
+  elif [[ "$major" -eq 1 && "$minor" -ge 17 ]]; then
+    echo "openjdk:17"
+  else
+    echo "openjdk:8-jdk"
+  fi
+}
+
+JAVA_IMAGE=$(get_java_image_for_mc_version "$VERSION")
+echo "Using Docker image: $JAVA_IMAGE"
+
+
+echo "Starting Minecraft $VERSION in Docker..."
+docker run -d \
+  --name "minecraft-$VERSION" \
+  -p 25565:25565 \
+  -v "$PWD":/data \
+  -e EULA=TRUE \
+  -w /data \
+  --restart unless-stopped \
+  "$JAVA_IMAGE" \
+  java -Xmx1G -Xms1G -jar "$JAR_NAME" nogui
+

@@ -11,7 +11,7 @@
 First, tap the repository:
 
 ```bash
-brew tap <your-github-username>/sofortcraft
+brew tap TheCr3at0r/sofortcraft
 ```
 
 Then install:
